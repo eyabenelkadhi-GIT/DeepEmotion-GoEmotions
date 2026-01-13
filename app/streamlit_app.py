@@ -45,63 +45,127 @@ def clean_text(text):
 
 # Chargement des modèles
 @st.cache_resource
-def load_tokenizer():
-    """Charge le tokenizer"""
+def load_tokenizers():
+    """Charge les tokenizers (Keras et BERT)"""
+    tokenizers = {}
+    
+    # 1. Keras Tokenizer (pour LSTM, BiLSTM, CNN)
     try:
-        # Essayer plusieurs chemins possibles
         paths = [
-            '../models/lstm/tokenizer.pkl',
-            'models/lstm/tokenizer.pkl',
             '../data/processed/tokenizer.pkl',
-            'data/processed/tokenizer.pkl'
+            'data/processed/tokenizer.pkl',
+            'tokenizer.pkl'
         ]
         for path in paths:
             if os.path.exists(path):
                 with open(path, 'rb') as f:
-                    return pickle.load(f)
-        st.warning("⚠️ Tokenizer non trouvé. Créer un tokenizer de base.")
-        return keras.preprocessing.text.Tokenizer(num_words=10000)
+                    tokenizers['keras'] = pickle.load(f)
+                break
+        if 'keras' not in tokenizers:
+            st.warning("⚠️ Tokenizer Keras non trouvé.")
     except Exception as e:
-        st.error(f"Erreur de chargement du tokenizer: {e}")
-        return keras.preprocessing.text.Tokenizer(num_words=10000)
+        st.error(f"Erreur loading Keras tokenizer: {e}")
+
+    # 2. BERT Tokenizer
+    try:
+        from transformers import BertTokenizer
+        tokenizers['bert'] = BertTokenizer.from_pretrained('bert-base-uncased')
+    except Exception as e:
+        st.error(f"Erreur loading BERT tokenizer: {e}")
+        
+    return tokenizers
 
 @st.cache_resource
 def load_model(model_name):
     """Charge le modèle sélectionné"""
+    # Chemins ajustés selon les notebooks
     model_paths = {
-        'LSTM': '../models/lstm/model.h5',
-        'BiLSTM + Attention': '../models/bilstm/model.h5',
-        'CNN-BiLSTM + Attention': '../models/cnn_bilstm/model.h5',
-        'BERT': '../models/bert/model.h5'
+        'LSTM': ['../models/lstm/best_model.h5', 'models/lstm/best_model.h5'],
+        'BiLSTM + Attention': ['../models/bilstm/best_model.h5', 'models/bilstm/best_model.h5'],
+        'CNN-BiLSTM + Attention': ['../models/cnn_bilstm/best_model.h5', 'models/cnn_bilstm/best_model.h5'],
+        'BERT': ['../models/bert/best_model', 'models/bert/best_model'] # SavedModel format (folder)
     }
     
+    # Essayer de trouver le bon chemin
+    selected_path = None
+    if model_name in model_paths:
+        for path in model_paths[model_name]:
+            if os.path.exists(path):
+                selected_path = path
+                break
+    
+    if not selected_path:
+        return None
+
     try:
-        path = model_paths[model_name]
-        if not os.path.exists(path):
-            # Essayer sans ../
-            path = path.replace('../', '')
-        model = keras.models.load_model(path, compile=False)
+        # Custom objects pour les couches personnalisées
+        custom_objects = {}
+        if 'Attention' in model_name:
+            # Définir AttentionLayer si nécessaire (copie de la classe des notebooks)
+            class AttentionLayer(keras.layers.Layer):
+                def __init__(self, **kwargs):
+                    super(AttentionLayer, self).__init__(**kwargs)
+                def build(self, input_shape):
+                    self.W = self.add_weight(name='attention_weight', shape=(input_shape[-1], 1), initializer='glorot_uniform', trainable=True)
+                    self.b = self.add_weight(name='attention_bias', shape=(input_shape[1], 1), initializer='zeros', trainable=True)
+                    super(AttentionLayer, self).build(input_shape)
+                def call(self, x):
+                    e = keras.backend.tanh(keras.backend.dot(x, self.W) + self.b)
+                    a = keras.backend.softmax(e, axis=1)
+                    output = x * a
+                    return keras.backend.sum(output, axis=1)
+                def get_config(self):
+                    return super(AttentionLayer, self).get_config()
+            
+            custom_objects['AttentionLayer'] = AttentionLayer
+
+        # Chargement
+        if model_name == 'BERT':
+            # BERT est souvent sauvegardé en TF SavedModel
+            from transformers import TFBertModel
+            custom_objects['TFBertModel'] = TFBertModel
+            model = keras.models.load_model(selected_path, custom_objects=custom_objects)
+        else:
+            model = keras.models.load_model(selected_path, custom_objects=custom_objects)
+            
         return model
     except Exception as e:
-        st.error(f"❌ Erreur de chargement du modèle {model_name}: {e}")
+        st.error(f"❌ Erreur détailée chargement {model_name}: {e}")
         return None
 
 # Fonction de prédiction
-def predict_emotions(text, model, tokenizer, top_k=10):
+def predict_emotions(text, model, tokenizers, model_name, top_k=10):
     """Prédit les émotions pour un texte donné"""
-    # Nettoyage
     cleaned_text = clean_text(text)
     
-    # Tokenization
-    sequences = tokenizer.texts_to_sequences([cleaned_text])
-    padded = keras.preprocessing.sequence.pad_sequences(
-        sequences, 
-        maxlen=MAX_SEQUENCE_LENGTH, 
-        padding='post'
-    )
-    
-    # Prédiction
-    predictions = model.predict(padded, verbose=0)[0]
+    # Préparation spécifique selon le modèle
+    if model_name == 'BERT':
+        tokenizer = tokenizers['bert']
+        encoding = tokenizer(
+            cleaned_text,
+            max_length=MAX_SEQUENCE_LENGTH,
+            padding='max_length',
+            truncation=True,
+            return_tensors='tf'
+        )
+        inputs = {
+            'input_ids': encoding['input_ids'],
+            'attention_mask': encoding['attention_mask']
+        }
+        predictions = model.predict(inputs, verbose=0)[0] # BERT retourne souvent un tuple ou dict
+        # Si le modèle retourne un objet TF, il faut extraire les logits/probs
+        if isinstance(predictions, dict):
+             predictions = predictions['output'] # Ajuster selon le nom de la couche de sortie
+    else:
+        # Modèles Keras standards
+        tokenizer = tokenizers['keras']
+        sequences = tokenizer.texts_to_sequences([cleaned_text])
+        padded = keras.preprocessing.sequence.pad_sequences(
+            sequences, 
+            maxlen=MAX_SEQUENCE_LENGTH, 
+            padding='post'
+        )
+        predictions = model.predict(padded, verbose=0)[0]
     
     # Top K émotions
     top_indices = np.argsort(predictions)[-top_k:][::-1]
@@ -158,8 +222,8 @@ def main():
     st.sidebar.caption(f"⚡ {model_info[model_choice]['params']}")
     
     # Chargement des ressources
-    with st.spinner("Chargement du tokenizer..."):
-        tokenizer = load_tokenizer()
+    with st.spinner("Chargement des tokenizers..."):
+        tokenizers = load_tokenizers()
     
     with st.spinner(f"Chargement du modèle {model_choice}..."):
         model = load_model(model_choice)
@@ -212,7 +276,7 @@ def main():
     if analyze_button and user_input.strip():
         with st.spinner("Analyse en cours..."):
             top_emotions, top_probs, all_predictions = predict_emotions(
-                user_input, model, tokenizer, top_k=10
+                user_input, model, tokenizers, model_choice, top_k=10
             )
         
         # Résultats
