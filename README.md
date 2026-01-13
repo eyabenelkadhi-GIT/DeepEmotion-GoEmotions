@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 📚 Projet Détection d'Émotions - GoEmotions
 
 ## 🎯 Vue d'ensemble
@@ -133,3 +134,6 @@ Pour toute question sur l'organisation du travail en équipe ou l'interface, con
 
 ## 📝 Licence
 Projet académique - 3ING - Indexation et Recherche d'Information
+=======
+# DeepEmotion-GoEmotions
+>>>>>>> a83c83edd255113bf67ad524ce79b966b70343b6
