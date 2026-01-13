@@ -1,0 +1,23 @@
+# ==================================================
+# Requirements pour Projet Détection d'Émotions
+# ==================================================
+
+# Core Deep Learning (pour notebooks + interface)
+tensorflow==2.15.0
+transformers==4.36.0
+
+# Data Processing
+numpy==1.26.3
+pandas==2.1.4
+
+# Visualization (pour interface Streamlit)
+plotly==5.18.0
+streamlit==1.29.0
+
+# ==================================================
+# Installation:
+# pip install -r requirements.txt
+#
+# Pour interface Streamlit uniquement:
+# pip install streamlit plotly tensorflow
+# ==================================================
